@@ -83,6 +83,15 @@ CLUSTER_RADIUS_M = 5.0
 ENTRANCE_OFFSET_M = 0.5
 
 # Ray-casting sanity limits
-MAX_LATERAL_ERROR_M = 3.0
+MAX_LATERAL_ERROR_M = 5.0   # raised from 3.0 — allows valid hits slightly off the wall
 MIN_RAY_DISTANCE_M  = 0.1
 MAX_RAY_DISTANCE_M  = 60.0
+
+# Image quality filter — Laplacian variance below this is considered blurry
+# Lowered from 100.0: many valid street-level images fail the stricter threshold
+SHARPNESS_THRESH = 50.0
+
+# Default horizontal FOV (degrees) for perspective (non-360) cameras when
+# camera_parameters are not available from the Mapillary API.
+# Most smartphones and dashcams used for street mapping are 65–80°.
+DEFAULT_HFOV_DEG = 70.0

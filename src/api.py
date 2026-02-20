@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from src.utils.geo_utils import simple_radius_to_bbox
@@ -16,6 +17,7 @@ def get_buildings_and_imagery_in_radius(
     max_images_total: int,
     min_capture_date: Optional[str],
     prefer_360: bool,
+    candidates_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Find all buildings within search_radius_m, join with nearby places,
@@ -83,17 +85,22 @@ def get_buildings_and_imagery_in_radius(
         min_capture_date=min_capture_date,
         max_images_per_building=max_images_total,
         prefer_360=prefer_360,
+        candidates_dir=candidates_dir,
     )
 
     image_data: List[Dict[str, Any]] = []
     for rec in (saved or []):
         lo, la = _extract_lon_lat(rec, lon, lat)
         image_data.append({
-            "image_path":   rec.get("path") or rec.get("jpg_path"),
-            "compass_angle": rec.get("compass_angle"),
-            "coordinates":  [lo, la],
-            "is_360":       rec.get("is_360", False),
-            "camera_type":  rec.get("camera_type"),
+            "image_path":        rec.get("path") or rec.get("jpg_path"),
+            "compass_angle":     rec.get("compass_angle"),
+            "coordinates":       [lo, la],
+            "is_360":            rec.get("is_360", False),
+            "camera_type":       rec.get("camera_type"),
+            # Camera intrinsics — needed for accurate FOV-based ray casting
+            "width":             rec.get("width"),
+            "height":            rec.get("height"),
+            "camera_parameters": rec.get("camera_parameters"),
         })
 
     return {

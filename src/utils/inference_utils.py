@@ -22,7 +22,10 @@ import numpy as np
 from pyproj import CRS, Transformer
 from huggingface_hub import hf_hub_download
 
-from .constants import MAX_LATERAL_ERROR_M, ENTRANCE_OFFSET_M, MIN_RAY_DISTANCE_M, MAX_RAY_DISTANCE_M
+from .constants import (
+    MAX_LATERAL_ERROR_M, ENTRANCE_OFFSET_M, MIN_RAY_DISTANCE_M, MAX_RAY_DISTANCE_M,
+    SHARPNESS_THRESH, DEFAULT_HFOV_DEG,
+)
 
 try:
     from ultralytics import YOLO
@@ -62,7 +65,7 @@ def to_lonlat_xy(xy, crs_local) -> Tuple[float, float]:
 
 # ── Image quality filters ─────────────────────────────────────────────────────
 
-def is_sharp(img: np.ndarray, thresh: float = 100.0) -> bool:
+def is_sharp(img: np.ndarray, thresh: float = SHARPNESS_THRESH) -> bool:
     if img.ndim > 2:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     return cv2.Laplacian(img, cv2.CV_64F).var() > thresh
@@ -190,9 +193,31 @@ def detect_entrances_in_image(
 # ── Camera model ──────────────────────────────────────────────────────────────
 
 def get_fov_half_angle(img_dict: dict) -> float:
-    if img_dict.get("is_360", False):
+    """Return the full horizontal FOV in degrees for this image's camera.
+
+    For 360° equirectangular images this is always 360° (90° returned as the
+    half-angle convention used by horizontal_fov_to_fx is not applied here —
+    the caller passes this directly as hfov_deg).
+
+    For perspective cameras we derive the true FOV from the Mapillary
+    camera_parameters field when available.  camera_parameters[0] is the
+    normalized focal length fx / max(W, H).  Falling back to DEFAULT_HFOV_DEG
+    (70°) is much more realistic than the previous hardcoded 45°.
+    """
+    if _is_360(img_dict) or img_dict.get("is_360", False):
         return 90.0
-    return 45.0  # conservative default for perspective cameras
+
+    params = img_dict.get("camera_parameters")
+    W = img_dict.get("width")
+    H = img_dict.get("height")
+    if params and W and H and len(params) >= 1:
+        fx_norm = params[0]
+        fx_px = float(fx_norm) * max(int(W), int(H))
+        if fx_px > 0:
+            # Full horizontal FOV = 2 * atan(W/2 / fx_px)
+            return math.degrees(2.0 * math.atan(int(W) / (2.0 * fx_px)))
+
+    return DEFAULT_HFOV_DEG  # 70° — realistic default for street cameras
 
 
 def horizontal_fov_to_fx(img_w: int, hfov_deg: float) -> float:
@@ -271,7 +296,7 @@ def match_entrance_to_building(
     ray: Tuple[np.ndarray, np.ndarray],
     buildings_xy: Dict,
     max_range_m: float = MAX_RAY_DISTANCE_M,
-    spread_deg: float = 1.0,
+    spread_deg: float = 3.0,
 ) -> Tuple[Optional[str], Optional[List]]:
     """
     Cast three slightly-spread rays and intersect against all building wall segments.

@@ -1,0 +1,23 @@
+# Environment — never commit your API tokens
+.env
+
+# Downloaded Overture data and Mapillary images
+data/
+outputs/
+
+# YOLO model weights
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE
+.cursor/

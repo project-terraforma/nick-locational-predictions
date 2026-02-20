@@ -12,6 +12,7 @@ def fetch_and_slice_for_building(
     min_capture_date: Optional[str],
     max_images_per_building: int,
     prefer_360: bool,
+    candidates_dir: Optional[Path] = None,
 ) -> List[Dict]:
     """
     Fetch Mapillary images near a building centroid, download thumbnails,
@@ -25,7 +26,7 @@ def fetch_and_slice_for_building(
     if not token:
         raise RuntimeError("MAPILLARY_ACCESS_TOKEN missing from environment.")
 
-    out_dir = Path("outputs/candidates/")
+    out_dir = candidates_dir if candidates_dir is not None else Path("outputs/candidates/")
     _ensure_dir(out_dir)
 
     t0 = time.perf_counter()
@@ -36,8 +37,12 @@ def fetch_and_slice_for_building(
         lat=lat,
         lon=lon,
         radius_m=radius_m,
-        fields=["id", "computed_geometry", "captured_at", "compass_angle",
-                "thumb_1024_url", "camera_type"],
+        fields=[
+            "id", "computed_geometry", "captured_at", "compass_angle",
+            "thumb_1024_url", "thumb_2048_url", "camera_type",
+            # These three fields enable accurate per-camera FOV computation
+            "width", "height", "camera_parameters",
+        ],
         prefer_360=prefer_360,
         min_capture_date_filter=min_capture_date,
     )
@@ -52,15 +57,21 @@ def fetch_and_slice_for_building(
     for img in imgs:
         img_id = img.get("id")
         img_path = out_dir / f"{img_id}.jpg"
-        download_image(img.get("thumb_1024_url"), img_path)
+        # Prefer 2048px thumbnail for better YOLO detection of small doors
+        url = img.get("thumb_2048_url") or img.get("thumb_1024_url")
+        download_image(url, img_path)
         saved.append({
-            "id": img_id,
-            "path": str(img_path),
-            "coordinates": img.get("computed_geometry", {}).get("coordinates"),
-            "compass_angle": img.get("compass_angle"),
-            "camera_type": img.get("camera_type"),
-            "is_360": _is_360(img),
-            "captured_at": img.get("captured_at"),
+            "id":                img_id,
+            "path":              str(img_path),
+            "coordinates":       img.get("computed_geometry", {}).get("coordinates"),
+            "compass_angle":     img.get("compass_angle"),
+            "camera_type":       img.get("camera_type"),
+            "is_360":            _is_360(img),
+            "captured_at":       img.get("captured_at"),
+            # Pass through for accurate FOV calculation in inference
+            "width":             img.get("width"),
+            "height":            img.get("height"),
+            "camera_parameters": img.get("camera_parameters"),
         })
 
     tlog("Building done", t0)

@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
+import cv2
+
 from src.utils.inference_utils import (
     make_local_proj,
     to_local_xy,
@@ -27,8 +29,10 @@ from src.utils.inference_utils import (
     match_entrance_to_building,
     select_exterior_seg,
     clamp_entrance_to_hit_segment,
+    _draw_dets,
 )
 from src.utils.geo_utils import _haversine
+from pathlib import Path
 
 try:
     from ultralytics import YOLO
@@ -85,20 +89,35 @@ def run_inference(
     model = load_yolo_model(yolo_weights, device=device)
 
     raw_entrances: List[Dict] = []
+    debug_dir = Path(save_vis) / "visualizations" if save_vis else None
+    if debug_dir:
+        debug_dir.mkdir(parents=True, exist_ok=True)
 
     for img in all_images:
         path = img["image_path"]
+        img_name = Path(path).name
         dets = detect_entrances_in_image(path, model, conf_thr=conf, iou_thr=iou,
                                          device=device, save_dir=save_vis)
+
+        # Debug: save annotated image for every input (even with 0 detections)
+        if debug_dir:
+            raw_img = cv2.imread(str(path))
+            if raw_img is not None:
+                vis = _draw_dets(raw_img, dets) if dets else raw_img
+                label = f"dets={len(dets)}"
+                cv2.putText(vis, label, (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8, (0, 200, 255), 2, cv2.LINE_AA)
+                cv2.imwrite(str(debug_dir / f"dbg_{img_name}"), vis)
+
         if not dets:
+            print(f"    [img] {img_name}  → 0 YOLO dets")
             continue
 
-        if len(dets) > 1:
-            print(f"  {len(dets)} detections in {path}")
-
+        matched_this_img = 0
         for det in dets:
             yolo_conf = det["conf"]
-            C, dir_xy = extract_bbox_coordinates(img, det["bbox"], proj_local, get_fov_half_angle(img))
+            hfov = get_fov_half_angle(img)
+            C, dir_xy = extract_bbox_coordinates(img, det["bbox"], proj_local, hfov)
 
             bid, candidates = match_entrance_to_building((C, dir_xy), buildings_xy)
             if bid is None or not candidates:
@@ -108,14 +127,18 @@ def run_inference(
             if best is None:
                 continue
 
+            matched_this_img += 1
             raw_entrances.append({
                 "camera_xy":    C,
                 "bid":          bid,
                 "image_path":   path,
                 "hit":          best["hit"],
                 "wall_segment": (best["segment"][0].tolist(), best["segment"][1].tolist()),
-                "yolo_conf":    yolo_conf,   # ← NEW: carry YOLO confidence forward
+                "yolo_conf":    yolo_conf,
             })
+
+        print(f"    [img] {img_name}  → {len(dets)} YOLO det(s)  "
+              f"fov={get_fov_half_angle(img):.0f}°  → {matched_this_img} building hit(s)")
 
     print(f"  Raw entrance candidates: {len(raw_entrances)}")
 

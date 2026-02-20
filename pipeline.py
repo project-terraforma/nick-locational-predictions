@@ -30,10 +30,14 @@ PYTHONPATH=. python pipeline.py \
 import argparse
 import struct
 import time
+import webbrowser
+from datetime import datetime
 from pathlib import Path
 
 import duckdb
 import dotenv; dotenv.load_dotenv()
+
+import visualize as _vis
 
 from src.api import get_buildings_and_imagery_in_radius
 from src.download import download_overture_radius
@@ -125,7 +129,7 @@ def load_places_from_parquet(parquet_path: str, category: str = None, limit: int
 
 # ── Single-point run ──────────────────────────────────────────────────────────
 
-def run_single(lat: float, lon: float, args, output_dir: Path):
+def run_single(lat: float, lon: float, args, output_dir: Path, candidates_dir: Path):
     """Process a single lat/lon — mirrors the mapillary-entrances pipeline."""
     t0 = time.perf_counter()
     print(f"\n{'='*60}")
@@ -147,6 +151,7 @@ def run_single(lat: float, lon: float, args, output_dir: Path):
         max_images_total=args.max_images,
         min_capture_date=args.min_capture_date,
         prefer_360=args.prefer_360,
+        candidates_dir=candidates_dir,
     )
 
     if not data["image_dicts"]:
@@ -154,8 +159,9 @@ def run_single(lat: float, lon: float, args, output_dir: Path):
         return []
 
     print("[3/3] Running inference...")
+    save_vis = str(output_dir) if getattr(args, "debug", False) else None
     entrances, buildings_lat_lon, place_names = run_inference(
-        data, args.model, args.conf, args.iou, args.device, args.save,
+        data, args.model, args.conf, args.iou, args.device, save_vis,
     )
 
     if not entrances:
@@ -167,19 +173,26 @@ def run_single(lat: float, lon: float, args, output_dir: Path):
             print(f"  Entrance lat={elat:.7f} lon={elon:.7f}  conf={conf:.3f}  "
                   f"n_dets={e.get('num_detections',1)}  img={Path(e['image_path']).name}")
 
-    write_geojson_for_verification(
+    out_path = write_geojson_for_verification(
         entrances, buildings_lat_lon, place_names,
         output_dir=output_dir,
         output_name=f"{lat:.5f}_{lon:.5f}.geojson",
-        open_browser=args.open_browser,
+        open_browser=False,
     )
+    if getattr(args, "open_browser", True):
+        vis_dir = output_dir / "visualizations"
+        html = _vis.build_html(out_path, candidates_dir, vis_dir if vis_dir.exists() else None)
+        out_html = out_path.with_suffix(".html")
+        out_html.write_text(html)
+        print(f"[vis] Map: {out_html.resolve()}")
+        webbrowser.open(out_html.resolve().as_uri())
     tlog("Point done", t0)
     return entrances
 
 
 # ── Batch run (--from_parquet) ────────────────────────────────────────────────
 
-def run_batch(args, output_dir: Path):
+def run_batch(args, output_dir: Path, candidates_dir: Path):
     """
     New mode: iterate over places in project_d_samples.parquet and run the
     entrance-prediction pipeline for each one.
@@ -216,14 +229,16 @@ def run_batch(args, output_dir: Path):
                 max_images_total=args.max_images,
                 min_capture_date=args.min_capture_date,
                 prefer_360=args.prefer_360,
+                candidates_dir=candidates_dir,
             )
 
             if not data["image_dicts"]:
                 print("  No imagery — skipping.")
                 continue
 
+            save_vis = str(output_dir) if getattr(args, "debug", False) else None
             entrances, buildings_lat_lon, place_names = run_inference(
-                data, args.model, args.conf, args.iou, args.device, args.save,
+                data, args.model, args.conf, args.iou, args.device, save_vis,
             )
 
             # Write per-place GeoJSON
@@ -289,7 +304,7 @@ def build_parser():
                    help="Radius in metres around each point for buildings + imagery")
     p.add_argument("--place_radius", type=int, default=120,
                    help="Radius in metres for joining buildings to places")
-    p.add_argument("--max_images", type=int, default=20,
+    p.add_argument("--max_images", type=int, default=50,
                    help="Maximum Mapillary images to download per point")
     p.add_argument("--prefer_360", action="store_true",
                    help="Prefer 360° panoramic images when available")
@@ -301,7 +316,7 @@ def build_parser():
                    help="Path to YOLOv8 weights file (auto-downloaded if missing)")
     p.add_argument("--device", type=str, default="cpu",
                    help="Inference device: cpu or cuda")
-    p.add_argument("--conf", type=float, default=0.5,
+    p.add_argument("--conf", type=float, default=0.35,
                    help="YOLO confidence threshold")
     p.add_argument("--iou", type=float, default=0.5,
                    help="YOLO IOU threshold for NMS")
@@ -310,21 +325,29 @@ def build_parser():
     p.add_argument("--save", type=str, default="outputs",
                    help="Output directory for GeoJSON and candidate images")
     p.add_argument("--open_browser", action="store_true", default=True,
-                   help="Open GeoJSON.io in browser after single-point run")
+                   help="Open the interactive visualize.py map in the browser after a single-point run")
+    p.add_argument("--debug", action="store_true",
+                   help="Save YOLO visualizations for every image (not just hits) "
+                        "so you can see what the detector saw")
 
     return p
 
 
 def main():
     args = build_parser().parse_args()
-    output_dir = Path(args.save)
-    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Each run gets its own timestamped folder so outputs never overwrite each other
+    run_dir = Path(args.save) / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    candidates_dir = run_dir / "candidates"
+    candidates_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[run] Output directory: {run_dir.resolve()}")
 
     if args.from_parquet:
-        run_batch(args, output_dir)
+        run_batch(args, run_dir, candidates_dir)
     elif args.input_point:
         lat_str, lon_str = args.input_point.split(",")
-        run_single(float(lat_str), float(lon_str), args, output_dir)
+        run_single(float(lat_str), float(lon_str), args, run_dir, candidates_dir)
     else:
         build_parser().error("Provide --input_point or --from_parquet")
 
