@@ -127,23 +127,36 @@ PYTHONPATH=. python3 pipeline.py \
     --model=yolo_weights_750_image_set.pt \
     --conf=0.35
 
+# First 20 places with YOLO debug images saved
+PYTHONPATH=. python3 pipeline.py \
+    --from_parquet=project_d_samples.parquet \
+    --limit=20 \
+    --search_radius=150 \
+    --model=yolo_weights_750_image_set.pt \
+    --conf=0.35 --debug
+
 # Hotels only
 PYTHONPATH=. python3 pipeline.py \
     --from_parquet=project_d_samples.parquet \
     --category=hotel \
     --limit=10 \
-    --model=yolo_weights_750_image_set.pt
+    --model=yolo_weights_750_image_set.pt \
+    --conf=0.35 --prefer_360
 ```
 
-Each run creates a new timestamped folder, e.g. `outputs/2024-01-15_14-30-00/`.
+Each batch run creates a new timestamped folder, e.g. `outputs/2024-01-15_14-30-00/`, and produces:
+- **Per-place GeoJSONs** in `geojsons/` — one file per location for per-location debugging
+- **`batch_combined.geojson`** — all locations merged into one file
+- **`batch_combined.html`** — the same interactive visualize.py map as single-point mode, opened automatically in the browser with all detected entrances across every location
+- **`predicted_entrances.parquet`** — summary table of all detections
 
 ### Visualise results
 ```bash
 # Auto-opens the most recent run
 python3 visualize.py
 
-# Visualise a specific GeoJSON
-python3 visualize.py outputs/2024-01-15_14-30-00/geojsons/37.78000_-122.40920.geojson
+# Visualise a specific GeoJSON (single-point or batch combined)
+python3 visualize.py outputs/2024-01-15_14-30-00/geojsons/batch_combined.geojson
 ```
 
 The map opens in your browser. **Click** any pin to see the photo and metadata. **Hover** over a pin to highlight the entire group — hovering a place pin highlights all its predicted entrances, and hovering an entrance highlights the place pin plus all sibling entrances for that building. All unrelated pins fade to 25% opacity.

@@ -327,11 +327,17 @@ var ENTRANCES = {entrances_js};
 var map = L.map('map', {{ zoomControl: false }}).setView([{center_lat}, {center_lon}], 20);
 L.control.zoom({{ position: 'bottomright' }}).addTo(map);
 
-L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
+// ── Base tile layers (radio — only one active at a time) ───────────────────
+var cartoLight = L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
   subdomains: 'abcd',
   maxZoom: 21,
 }}).addTo(map);
+
+var satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+  attribution: '&copy; Esri &mdash; Esri, Maxar, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN',
+  maxZoom: 19,
+}});
 
 // ── Layer groups ───────────────────────────────────────────────────────────
 var buildingGroup  = L.layerGroup().addTo(map);
@@ -339,12 +345,16 @@ var placeGroup     = L.layerGroup().addTo(map);
 var entranceGroup  = L.layerGroup().addTo(map);
 var namesGroup     = L.layerGroup().addTo(map);
 
-L.control.layers(null, {{
-  'Building footprints':     buildingGroup,
-  'Overture place pins':     placeGroup,
-  'Predicted entrances':     entranceGroup,
-  'Business / building names': namesGroup,
-}}, {{ collapsed: false, position: 'topleft' }}).addTo(map);
+L.control.layers(
+  {{ 'Map': cartoLight, 'Satellite': satellite }},
+  {{
+    'Building footprints':       buildingGroup,
+    'Overture place pins':       placeGroup,
+    'Predicted entrances':       entranceGroup,
+    'Business / building names': namesGroup,
+  }},
+  {{ collapsed: false, position: 'topleft' }}
+).addTo(map);
 
 // ── Info panel ─────────────────────────────────────────────────────────────
 var panel = document.getElementById('info-panel');

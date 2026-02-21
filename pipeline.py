@@ -194,10 +194,12 @@ def run_single(lat: float, lon: float, args, output_dir: Path, candidates_dir: P
 
 def run_batch(args, output_dir: Path, candidates_dir: Path):
     """
-    New mode: iterate over places in project_d_samples.parquet and run the
+    Batch mode: iterate over places in project_d_samples.parquet and run the
     entrance-prediction pipeline for each one.
 
-    Results are accumulated into a summary parquet written at the end.
+    At the end, all results are merged into a single combined GeoJSON and opened
+    in the same interactive visualize.py map as the single-point mode.
+    Per-place GeoJSONs are also written for per-location debugging.
     """
     print(f"[batch] Loading places from {args.from_parquet}")
     places = load_places_from_parquet(
@@ -207,7 +209,11 @@ def run_batch(args, output_dir: Path, candidates_dir: Path):
     )
     print(f"[batch] {len(places)} places to process")
 
-    all_results = []
+    # Accumulated across all batch iterations
+    all_results        = []          # rows for the summary parquet
+    all_entrances      = []          # entrance dicts for the combined GeoJSON
+    all_buildings      = {}          # bid → polygon coords
+    all_place_names    = {}          # bid → place metadata
 
     for i, place in enumerate(places, 1):
         lat = place["lat"]
@@ -241,15 +247,20 @@ def run_batch(args, output_dir: Path, candidates_dir: Path):
                 data, args.model, args.conf, args.iou, args.device, save_vis,
             )
 
-            # Write per-place GeoJSON
+            # Write per-place GeoJSON (useful for debugging individual locations)
             write_geojson_for_verification(
                 entrances, buildings_lat_lon, place_names,
                 output_dir=output_dir,
                 output_name=f"{lat:.5f}_{lon:.5f}.geojson",
-                open_browser=False,  # don't open browser for every place in batch
+                open_browser=False,
             )
 
-            # Accumulate results for the summary parquet
+            # Merge into batch-wide accumulators
+            all_entrances.extend(entrances)
+            all_buildings.update(buildings_lat_lon)
+            all_place_names.update(place_names)
+
+            # Accumulate rows for the summary parquet
             for e in entrances:
                 elon, elat = e["entrance"]
                 all_results.append({
@@ -270,12 +281,29 @@ def run_batch(args, output_dir: Path, candidates_dir: Path):
             print(f"  [ERROR] {exc}")
             continue
 
-    # Write summary
+    # ── Write combined outputs ─────────────────────────────────────────────
+    print(f"\n[batch] Done. {len(all_entrances)} entrances found across {len(places)} places.")
+
     if all_results:
         write_results_parquet(all_results, out_path=str(output_dir / "predicted_entrances.parquet"))
-        print(f"\n[batch] Done. {len(all_results)} entrances found across {len(places)} places.")
+
+    if all_entrances or all_buildings:
+        # Combined GeoJSON — all locations merged into one file
+        combined_path = write_geojson_for_verification(
+            all_entrances, all_buildings, all_place_names,
+            output_dir=output_dir,
+            output_name="batch_combined.geojson",
+            open_browser=False,
+        )
+        # Open the same interactive map as single-point mode
+        vis_dir = output_dir / "visualizations"
+        html = _vis.build_html(combined_path, candidates_dir, vis_dir if vis_dir.exists() else None)
+        out_html = combined_path.with_suffix(".html")
+        out_html.write_text(html)
+        print(f"[vis] Combined map: {out_html.resolve()}")
+        webbrowser.open(out_html.resolve().as_uri())
     else:
-        print("\n[batch] Done. No entrances detected.")
+        print("[batch] No entrances detected — no map generated.")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
