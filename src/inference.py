@@ -29,6 +29,7 @@ from src.utils.inference_utils import (
     match_entrance_to_building,
     select_exterior_seg,
     clamp_entrance_to_hit_segment,
+    point_line_distance_segment,
     _draw_dets,
 )
 from src.utils.geo_utils import _haversine
@@ -205,5 +206,68 @@ def run_inference(
                 "wall_segment":         rep.get("wall_segment"),
             })
 
+    # ── Distance filters ──────────────────────────────────────────────────────
+    #
+    # Filter 1 — wall proximity (geometric sanity check):
+    #   The cluster centre must be within MAX_ENTRANCE_TO_WALL_M of the matched
+    #   building's polygon EDGE (true point-to-segment distance in local metres).
+    #   Because every entrance is snapped to the wall and offset 0.5 m outward,
+    #   this is normally ~0.5 m.  It catches the rare case where the weighted-
+    #   mean of a cluster has drifted far from the wall.
+    #
+    # Filter 2 — place proximity (semantic sanity check):
+    #   When the building has an Overture place record, the entrance must also be
+    #   within MAX_ENTRANCE_TO_PLACE_M of that place's centroid.  A single large
+    #   building polygon (e.g. a city block) can contain many businesses; an
+    #   entrance detected on the far side of the block is almost certainly not the
+    #   entrance for the specific business whose Overture pin is on the near side.
+    MAX_ENTRANCE_TO_WALL_M  = 10.0   # metres — catches weighted-mean drift
+    MAX_ENTRANCE_TO_PLACE_M = 50.0   # metres — catches cross-block mismatches
+
+    filtered: List[Dict] = []
+    n_rejected = 0
+    for ent in building_entrances:
+        bid        = ent["bid"]
+        elon, elat = ent["entrance"]
+
+        # ── Filter 1: wall proximity ──────────────────────────────────────
+        poly_xy = buildings_xy.get(bid, [])
+        if poly_xy:
+            ent_xy  = to_local_xy(elon, elat, proj_local)
+            n_verts = len(poly_xy)
+            min_dist = min(
+                point_line_distance_segment(
+                    ent_xy,
+                    np.asarray(poly_xy[i],                  float),
+                    np.asarray(poly_xy[(i + 1) % n_verts],  float),
+                )
+                for i in range(n_verts)
+            )
+            if min_dist > MAX_ENTRANCE_TO_WALL_M:
+                n_rejected += 1
+                print(f"  [wall-filter] Dropped entrance for {bid[:8]}…: "
+                      f"{min_dist:.1f} m from nearest wall edge "
+                      f"(threshold {MAX_ENTRANCE_TO_WALL_M} m)")
+                continue
+
+        # ── Filter 2: place proximity ─────────────────────────────────────
+        place = place_names.get(bid)
+        if place and place.get("lon") is not None and place.get("lat") is not None:
+            place_lon = float(place["lon"])
+            place_lat = float(place["lat"])
+            dist_to_place = _haversine(elat, elon, place_lat, place_lon)
+            if dist_to_place > MAX_ENTRANCE_TO_PLACE_M:
+                n_rejected += 1
+                print(f"  [place-filter] Dropped entrance for {bid[:8]}…: "
+                      f"{dist_to_place:.1f} m from Overture place pin "
+                      f"(threshold {MAX_ENTRANCE_TO_PLACE_M} m)")
+                continue
+
+        filtered.append(ent)
+
+    if n_rejected:
+        print(f"  Distance filter removed {n_rejected} entrance(s)")
+
+    building_entrances = filtered
     print(f"  Final entrance clusters: {len(building_entrances)}")
     return building_entrances, buildings_lat_lon, place_names
